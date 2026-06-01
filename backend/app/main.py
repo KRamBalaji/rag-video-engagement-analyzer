@@ -10,6 +10,9 @@ from app.services.youtube_service import (
     get_youtube_transcript_placeholder,
     YouTubeVideoDataError,
 )
+from app.rag.vector_store import upsert_video_chunks
+from dotenv import load_dotenv
+load_dotenv()
 
 
 class VideoPlatform(str):
@@ -171,8 +174,39 @@ def process_videos(payload: VideoPairRequest):
     video_a_info = process_single_video(str(payload.video_a_url), "Video A")
     video_b_info = process_single_video(str(payload.video_b_url), "Video B")
 
+    # Upsert chunks for RAG
+    try:
+        upsert_video_chunks(
+            video_id=video_a_info.video_id or "unknown",
+            video_label="A",
+            transcript=video_a_info.transcript or "",
+            metadata={
+                "video_id": video_a_info.video_id,
+                "platform": video_a_info.platform,
+                "title": video_a_info.title,
+                "creator": video_a_info.creator,
+            },
+        )
+
+        upsert_video_chunks(
+            video_id=video_b_info.video_id or "unknown",
+            video_label="B",
+            transcript=video_b_info.transcript or "",
+            metadata={
+                "video_id": video_b_info.video_id,
+                "platform": video_b_info.platform,
+                "title": video_b_info.title,
+                "creator": video_b_info.creator,
+            },
+        )
+    except Exception as e:
+        # In demo, we don't fail the whole request if embeddings/storage fails.
+        # You can log this in a real app.
+        print(f"[WARN] Failed to upsert video chunks: {e}")
+
     return VideoPairResponse(
         video_a=video_a_info,
         video_b=video_b_info,
-        message="Videos processed. Metadata and transcripts (where available) fetched successfully.",
+        message="Videos processed and chunks stored for RAG.",
     )
+

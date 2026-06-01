@@ -8,6 +8,7 @@ from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
 from sentence_transformers import SentenceTransformer
 from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_core.vectorstores import VectorStoreRetriever
 
 
 # Singleton-style store in process
@@ -79,3 +80,7 @@ def upsert_video_chunks(
     store.persist()
 
     return ids
+
+def get_retriever(k: int = 6):
+    store = get_vector_store()
+    return store.as_retriever(search_kwargs={"k": k})

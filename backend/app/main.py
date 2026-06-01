@@ -3,16 +3,36 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, HttpUrl
 from fastapi.middleware.cors import CORSMiddleware
 import os
-from typing import Literal, Dict, Any, Optional
+from typing import List, Literal, Dict, Any, Optional
 from app.services.youtube_service import (
     extract_video_id,
     get_youtube_metadata,
     get_youtube_transcript_placeholder,
     YouTubeVideoDataError,
 )
-from app.rag.vector_store import upsert_video_chunks
+from app.rag.vector_store import upsert_video_chunks, get_retriever
 from dotenv import load_dotenv
 load_dotenv()
+from sentence_transformers import SentenceTransformer
+from groq import Groq
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+
+class ChatMessage(BaseModel):
+    role: str  # "user" or "assistant"
+    content: str
+
+class ChatRequest(BaseModel):
+    session_id: str
+    message: str
+    history: List[ChatMessage] = []
+
+class ChatResponse(BaseModel):
+    answer: str
+    citations: List[dict]
 
 
 class VideoPlatform(str):
@@ -210,3 +230,90 @@ def process_videos(payload: VideoPairRequest):
         message="Videos processed and chunks stored for RAG.",
     )
 
+@app.post("/api/chat", response_model=ChatResponse)
+def chat_rag(payload: ChatRequest):
+    """
+    RAG chat endpoint:
+    - Uses Chroma retriever over video chunks.
+    - Builds a prompt including engagement and metadata from last /api/process_videos call.
+    - Returns answer + citations.
+    """
+    if groq_client is None:
+        raise HTTPException(status_code=500, detail="LLM not configured (missing GROQ_API_KEY).")
+
+    retriever = get_retriever(k=6)
+    # Retrieve relevant chunks
+    docs = retriever.invoke(payload.message)
+
+
+    # Build context string + citations
+    context_parts = []
+    citations = []
+    for idx, doc in enumerate(docs):
+        meta = doc.metadata or {}
+        label = meta.get("video_label", "?")
+        title = meta.get("title") or "Unknown title"
+        creator = meta.get("creator") or "Unknown creator"
+        chunk_index = meta.get("chunk_index", idx)
+
+        context_parts.append(
+            f"[Chunk {idx}] Video {label} | Title: {title} | Creator: {creator}\n{doc.page_content}"
+        )
+        citations.append(
+            {
+                "video_label": label,
+                "chunk_index": chunk_index,
+                "title": title,
+                "creator": creator,
+            }
+        )
+
+    context_text = "\n\n".join(context_parts) if context_parts else "No relevant transcript chunks found."
+
+    # Turn history into messages
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an assistant analyzing two social media videos, A and B. "
+                "You are given transcript chunks with metadata. Answer questions about:\n"
+                "- Why A may have higher engagement than B\n"
+                "- Engagement rates\n"
+                "- Hooks in the first 5 seconds\n"
+                "- Creator and follower information\n"
+                "- Suggestions to improve B based on what worked in A\n\n"
+                "Use ONLY the provided context and known numeric metadata. "
+                "Always mention which video (A or B) and which chunk indices you are using as evidence. "
+                "If you don't know something, say so honestly."
+            ),
+        }
+    ]
+
+    # Append conversation history
+    for msg in payload.history:
+        messages.append({"role": msg.role, "content": msg.content})
+
+    # Add current user message with context
+    messages.append(
+        {
+            "role": "user",
+            "content": f"Context:\n{context_text}\n\nUser question: {payload.message}",
+        }
+    )
+
+    # Call the LLM
+    if groq_client is None:
+        raise HTTPException(status_code=500, detail="LLM not configured (missing GROQ_API_KEY).")
+
+    try:
+        completion = groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=messages,
+            temperature=0.4,
+        )
+        answer = completion.choices[0].message.content
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Groq LLM error: {e}")
+
+
+    return ChatResponse(answer=answer, citations=citations)

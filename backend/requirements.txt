@@ -5,3 +5,4 @@ langchain-openai
 pydantic
 python-dotenv
 chromadb
+yt-dlp

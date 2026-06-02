@@ -228,10 +228,10 @@ def process_videos(payload: VideoPairRequest):
                 "platform": video_b_info.platform,
                 "title": video_b_info.title,
                 "creator": video_b_info.creator,
-                "views": video_a_info.views,
-                "likes": video_a_info.likes,
-                "comments": video_a_info.comments,
-                "engagement_rate": video_a_info.engagement_rate,
+                "views": video_b_info.views,
+                "likes": video_b_info.likes,
+                "comments": video_b_info.comments,
+                "engagement_rate": video_b_info.engagement_rate,
             },
         )
     except Exception as e:
@@ -264,6 +264,13 @@ def chat_rag(payload: ChatRequest):
     # Build context string + citations
     context_parts = []
     citations = []
+
+    summary_by_label = {
+        "A": {"views": None, "likes": None, "comments": None, "engagement_rate": None},
+        "B": {"views": None, "likes": None, "comments": None, "engagement_rate": None},
+    }
+
+
     for idx, doc in enumerate(docs):
         meta = doc.metadata or {}
         label = meta.get("video_label", "?")
@@ -274,6 +281,17 @@ def chat_rag(payload: ChatRequest):
         likes = meta.get("likes")
         comments = meta.get("comments")
         er = meta.get("engagement_rate")
+
+        if label in summary_by_label:
+            s = summary_by_label[label]
+            if views is not None and s["views"] is None:
+                s["views"] = views
+            if likes is not None and s["likes"] is None:
+                s["likes"] = likes
+            if comments is not None and s["comments"] is None:
+                s["comments"] = comments
+            if er is not None and s["engagement_rate"] is None:
+                s["engagement_rate"] = er
 
         stats_line = ""
         if views is not None:

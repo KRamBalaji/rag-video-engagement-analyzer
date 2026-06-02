@@ -10,7 +10,7 @@ from app.services.youtube_service import (
     get_youtube_transcript_placeholder,
     YouTubeVideoDataError,
 )
-from app.rag.vector_store import upsert_video_chunks, get_retriever
+from app.rag.vector_store import upsert_video_chunks, get_retriever, clear_vector_store
 from dotenv import load_dotenv
 load_dotenv()
 from sentence_transformers import SentenceTransformer
@@ -191,6 +191,13 @@ def process_single_video(url: str, label: str) -> VideoInfo:
 
 @app.post("/api/process_videos", response_model=VideoPairResponse)
 def process_videos(payload: VideoPairRequest):
+
+    # Clear previous chunks so we only ever reason over the current pair
+    try:
+        clear_vector_store()
+    except Exception as e:
+        print(f"[WARN] Failed to clear vector store: {e}")
+
     video_a_info = process_single_video(str(payload.video_a_url), "Video A")
     video_b_info = process_single_video(str(payload.video_b_url), "Video B")
 
@@ -205,6 +212,10 @@ def process_videos(payload: VideoPairRequest):
                 "platform": video_a_info.platform,
                 "title": video_a_info.title,
                 "creator": video_a_info.creator,
+                "views": video_a_info.views,
+                "likes": video_a_info.likes,
+                "comments": video_a_info.comments,
+                "engagement_rate": video_a_info.engagement_rate,
             },
         )
 
@@ -217,6 +228,10 @@ def process_videos(payload: VideoPairRequest):
                 "platform": video_b_info.platform,
                 "title": video_b_info.title,
                 "creator": video_b_info.creator,
+                "views": video_a_info.views,
+                "likes": video_a_info.likes,
+                "comments": video_a_info.comments,
+                "engagement_rate": video_a_info.engagement_rate,
             },
         )
     except Exception as e:
@@ -255,18 +270,40 @@ def chat_rag(payload: ChatRequest):
         title = meta.get("title") or "Unknown title"
         creator = meta.get("creator") or "Unknown creator"
         chunk_index = meta.get("chunk_index", idx)
+        views = meta.get("views")
+        likes = meta.get("likes")
+        comments = meta.get("comments")
+        er = meta.get("engagement_rate")
+
+        stats_line = ""
+        if views is not None:
+            stats_line += f"Views: {views}. "
+        if likes is not None:
+            stats_line += f"Likes: {likes}. "
+        if comments is not None:
+            stats_line += f"Comments: {comments}. "
+        if er is not None:
+            stats_line += f"Engagement rate: {er:.2f}%. "
 
         context_parts.append(
-            f"[Chunk {idx}] Video {label} | Title: {title} | Creator: {creator}\n{doc.page_content}"
+            f"[Chunk {idx}] Video {label} | Title: {title} | Creator: {creator}\n"
+            f"{stats_line}\n"
+            f"{doc.page_content}"
         )
-        citations.append(
-            {
-                "video_label": label,
-                "chunk_index": chunk_index,
-                "title": title,
-                "creator": creator,
-            }
-        )
+
+    citations.append(
+        {
+            "video_label": label,
+            "chunk_index": chunk_index,
+            "title": title,
+            "creator": creator,
+            "views": views,
+            "likes": likes,
+            "comments": comments,
+            "engagement_rate": er,
+        }
+    )
+
 
     context_text = "\n\n".join(context_parts) if context_parts else "No relevant transcript chunks found."
 

@@ -63,12 +63,16 @@ def upsert_video_chunks(
 
     for idx, chunk in enumerate(chunks):
         doc_metadata = {
-            "video_label": video_label,             # "A" or "B"
+            "video_label": video_label,
             "source_video_id": metadata.get("video_id"),
             "platform": metadata.get("platform"),
             "title": metadata.get("title"),
             "creator": metadata.get("creator"),
             "chunk_index": idx,
+            "views": metadata.get("views"),
+            "likes": metadata.get("likes"),
+            "comments": metadata.get("comments"),
+            "engagement_rate": metadata.get("engagement_rate"),
         }
         docs.append(Document(page_content=chunk, metadata=doc_metadata))
         ids.append(f"{video_label}_{metadata.get('video_id')}_{idx}")
@@ -84,3 +88,8 @@ def upsert_video_chunks(
 def get_retriever(k: int = 6):
     store = get_vector_store()
     return store.as_retriever(search_kwargs={"k": k})
+
+def clear_vector_store():
+    store = get_vector_store()
+    store.delete(ids=None, where={})
+    store.persist()

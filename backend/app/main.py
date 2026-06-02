@@ -255,6 +255,16 @@ def chat_rag(payload: ChatRequest):
     """
     if groq_client is None:
         raise HTTPException(status_code=500, detail="LLM not configured (missing GROQ_API_KEY).")
+    
+    try:
+        completion = groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=messages,
+            temperature=0.4,
+        )
+        answer = completion.choices[0].message.content
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Groq LLM error: {e}")
 
     retriever = get_retriever(k=6)
     # Retrieve relevant chunks

@@ -81,7 +81,6 @@ def upsert_video_chunks(
         return []
 
     store.add_documents(documents=docs, ids=ids)
-    store.persist()
 
     return ids
 
@@ -100,4 +99,3 @@ def clear_vector_store():
             store.delete(ids=None)
         except Exception as exc:
             raise RuntimeError("Unable to clear the vector store: no supported delete/reset method was found.") from exc
-    store.persist()

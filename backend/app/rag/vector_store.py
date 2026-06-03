@@ -4,10 +4,10 @@ import os
 from typing import List, Dict, Any
 
 from langchain_openai import OpenAIEmbeddings
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from sentence_transformers import SentenceTransformer
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.vectorstores import VectorStoreRetriever
 
 
@@ -91,5 +91,13 @@ def get_retriever(k: int = 6):
 
 def clear_vector_store():
     store = get_vector_store()
-    store.delete(ids=None, where={})
+    if hasattr(store, "reset_collection"):
+        store.reset_collection()
+    elif hasattr(store, "delete_collection"):
+        store.delete_collection()
+    else:
+        try:
+            store.delete(ids=None)
+        except Exception as exc:
+            raise RuntimeError("Unable to clear the vector store: no supported delete/reset method was found.") from exc
     store.persist()

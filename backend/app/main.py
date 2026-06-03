@@ -343,14 +343,18 @@ def chat_rag(payload: ChatRequest):
     # Retrieve relevant chunks
     docs = retriever.invoke(payload.message)
 
+    if "video b" in payload.message.lower():
+        docs = [d for d in docs if d.metadata.get("video_label") == "B"] or docs
+    elif "video a" in payload.message.lower():
+        docs = [d for d in docs if d.metadata.get("video_label") == "A"] or docs
 
     # Build context string + citations
     context_parts = []
     citations = []
 
     summary_by_label = {
-        "A": {"views": None, "likes": None, "comments": None, "engagement_rate": None},
-        "B": {"views": None, "likes": None, "comments": None, "engagement_rate": None},
+        "A": {"platform": None, "views": None, "likes": None, "comments": None, "engagement_rate": None},
+        "B": {"platform": None, "views": None, "likes": None, "comments": None, "engagement_rate": None},
     }
 
 
@@ -360,6 +364,7 @@ def chat_rag(payload: ChatRequest):
         title = meta.get("title") or "Unknown title"
         creator = meta.get("creator") or "Unknown creator"
         chunk_index = meta.get("chunk_index", idx)
+        platform = meta.get("platform") or "unknown"
         views = meta.get("views")
         likes = meta.get("likes")
         comments = meta.get("comments")
@@ -367,6 +372,8 @@ def chat_rag(payload: ChatRequest):
 
         if label in summary_by_label:
             s = summary_by_label[label]
+            if s["platform"] is None:
+                s["platform"] = platform
             if views is not None and s["views"] is None:
                 s["views"] = views
             if likes is not None and s["likes"] is None:
@@ -376,7 +383,7 @@ def chat_rag(payload: ChatRequest):
             if er is not None and s["engagement_rate"] is None:
                 s["engagement_rate"] = er
 
-        stats_line = ""
+        stats_line = f"Platform: {platform}. "
         if views is not None:
             stats_line += f"Views: {views}. "
         if likes is not None:
@@ -398,6 +405,7 @@ def chat_rag(payload: ChatRequest):
             "chunk_index": chunk_index,
             "title": title,
             "creator": creator,
+            "platform": platform,
             "views": views,
             "likes": likes,
             "comments": comments,
@@ -405,6 +413,25 @@ def chat_rag(payload: ChatRequest):
         }
     )
 
+    def format_engagement_summary(label: str, s: dict) -> str:
+        plat = s["platform"] or "unknown"
+        if all(v is None for k, v in s.items() if k != "platform"):
+            return f"Video {label} ({plat}): engagement metrics unknown."
+        parts = [f"Platform={plat}"]
+        if s["views"] is not None:
+            parts.append(f"Views={s['views']}")
+        if s["likes"] is not None:
+            parts.append(f"Likes={s['likes']}")
+        if s["comments"] is not None:
+            parts.append(f"Comments={s['comments']}")
+        if s["engagement_rate"] is not None:
+            parts.append(f"EngagementRate={s['engagement_rate']:.2f}%")
+        return f"Video {label}: " + ", ".join(parts) + "."
+
+    engagement_summary = (
+        format_engagement_summary("A", summary_by_label["A"]) + "\n" +
+        format_engagement_summary("B", summary_by_label["B"])
+    )
 
     context_text = "\n\n".join(context_parts) if context_parts else "No relevant transcript chunks found."
 

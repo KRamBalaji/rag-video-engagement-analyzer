@@ -5,12 +5,16 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, HttpUrl
 from fastapi.middleware.cors import CORSMiddleware
 import os
-from typing import List, Literal, Dict, Any, Optional
+from typing import List, Literal, Dict, Any, Optional, Union
 from app.services.youtube_service import (
     extract_video_id,
     get_youtube_metadata,
     get_youtube_transcript_placeholder,
     YouTubeVideoDataError,
+)
+from app.services.instagram_service import (
+    get_instagram_metadata,
+    InstagramVideoDataError,
 )
 from app.rag.vector_store import upsert_video_chunks, get_retriever, clear_vector_store
 from app.services.transcript_service import get_transcript_fast, TranscriptError
@@ -106,6 +110,18 @@ def compute_engagement_rate(likes: Optional[int], comments: Optional[int], views
     return (likes + comments) / views * 100.0
 
 
+def parse_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
+
+
 async def process_single_video(url: str, label: str) -> VideoInfo:
     platform = detect_platform(url)
     video_data: Dict[str, Any] = {
@@ -174,11 +190,11 @@ async def process_single_video(url: str, label: str) -> VideoInfo:
             {
                 "title": metadata.get("title"),
                 "creator": metadata.get("channel"),
-                "views": metadata.get("views"),
-                "likes": metadata.get("likes"),
-                "comments": metadata.get("comments"),
+                "views": parse_int(metadata.get("views")),
+                "likes": parse_int(metadata.get("likes")),
+                "comments": parse_int(metadata.get("comments")),
                 "upload_date": metadata.get("publish_date"),
-                "duration_seconds": metadata.get("duration_seconds"),
+                "duration_seconds": parse_int(metadata.get("duration_seconds")),
                 "duration": metadata.get("duration"),
                 "thumbnail_url": metadata.get("thumbnail_url"),
                 "transcript": transcript,
@@ -193,18 +209,51 @@ async def process_single_video(url: str, label: str) -> VideoInfo:
 
 
     elif platform == "instagram":
-        # Placeholder: we’ll implement real IG logic next
-        video_data["title"] = None
-        video_data["creator"] = None
-        video_data["views"] = None
-        video_data["likes"] = None
-        video_data["comments"] = None
-        video_data["engagement_rate"] = None
-        video_data["transcript"] = None
-    else:
-        # Unknown platform
-        video_data["title"] = None
-        video_data["creator"] = None
+        try:
+            ig_meta = get_instagram_metadata(url)
+        except InstagramVideoDataError as e:
+            print(f"[WARN] Failed to fetch Instagram metadata for {label}: {e}")
+            ig_meta = {
+                "title": None,
+                "creator": None,
+                "views": None,
+                "likes": None,
+                "comments": None,
+                "description": "",
+                "hashtags": [],
+                "upload_date": None,
+                "thumbnail_url": None,
+                "duration_seconds": None,
+                "duration": None,
+                "follower_count": None,
+            }
+
+        # For now, reuse a simple placeholder transcript for IG to keep it fast
+        transcript = f"This is a placeholder transcript for {label} on Instagram. In production, this would be generated via yt-dlp + Whisper for the Reel."
+
+        video_data.update(
+            {
+                "title": ig_meta.get("title"),
+                "creator": ig_meta.get("creator"),
+                "views": parse_int(ig_meta.get("views")),
+                "likes": parse_int(ig_meta.get("likes")),
+                "comments": parse_int(ig_meta.get("comments")),
+                "upload_date": ig_meta.get("upload_date"),
+                "duration_seconds": parse_int(ig_meta.get("duration_seconds")),
+                "duration": ig_meta.get("duration"),
+                "thumbnail_url": ig_meta.get("thumbnail_url"),
+                "hashtags": ig_meta.get("hashtags"),
+                "follower_count": parse_int(ig_meta.get("follower_count")),
+                "transcript": transcript,
+            }
+        )
+
+        engagement_rate = compute_engagement_rate(
+            likes=video_data.get("likes"),
+            comments=video_data.get("comments"),
+            views=video_data.get("views"),
+        )
+        video_data["engagement_rate"] = engagement_rate
 
     return VideoInfo(**video_data)
 

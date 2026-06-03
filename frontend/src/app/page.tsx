@@ -140,7 +140,9 @@ export default function Home() {
       {video.thumbnail_url && (
         // eslint-disable-next-line @next/next/no-img-element
         <img
-          src={video.thumbnail_url}
+          src={`${BACKEND_URL}/proxy-thumbnail?url=${encodeURIComponent(
+            video.thumbnail_url
+          )}`}
           alt={video.title || `Video ${label} thumbnail`}
           className="w-full h-auto mb-2 rounded"
         />

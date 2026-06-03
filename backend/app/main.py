@@ -1,10 +1,13 @@
 # app/main.py
 import asyncio
 from fastapi.concurrency import run_in_threadpool
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, HttpUrl
 from fastapi.middleware.cors import CORSMiddleware
 import os
+import requests
+from fastapi.responses import StreamingResponse
+from urllib.parse import unquote
 from typing import List, Literal, Dict, Any, Optional, Union
 from app.services.youtube_service import (
     extract_video_id,
@@ -228,8 +231,19 @@ async def process_single_video(url: str, label: str) -> VideoInfo:
                 "follower_count": None,
             }
 
-        # For now, reuse a simple placeholder transcript for IG to keep it fast
-        transcript = f"This is a placeholder transcript for {label} on Instagram. In production, this would be generated via yt-dlp + Whisper for the Reel."
+        try:
+            transcript = get_transcript_fast(url, label)
+            if not transcript:
+                transcript = (
+                    f"This is a short placeholder transcript for {label} on Instagram. "
+                    f"In production, we would transcribe the full Reel."
+                )
+        except TranscriptError as e:
+            print(f"[WARN] Whisper transcript failed for Instagram {label}: {e}")
+            transcript = (
+                f"This is a placeholder transcript for {label} on Instagram. "
+                f"Transcript generation failed or is disabled."
+            )
 
         video_data.update(
             {
@@ -437,3 +451,27 @@ def chat_rag(payload: ChatRequest):
 
 
     return ChatResponse(answer=answer, citations=citations)
+
+@app.get("/proxy-thumbnail")
+def proxy_thumbnail(url: str = Query(..., description="Upstream image URL")):
+    """
+    Simple image proxy to bypass hotlink blocking from Instagram's CDN.
+    The frontend calls this instead of the IG URL directly.
+    """
+    try:
+        # Decode URL if it was encoded on the frontend
+        target_url = unquote(url)
+
+        # Stream the image from Instagram
+        resp = requests.get(target_url, stream=True, timeout=10)
+        resp.raise_for_status()
+
+        content_type = resp.headers.get("Content-Type", "image/jpeg")
+
+        return StreamingResponse(
+            resp.raw,
+            media_type=content_type,
+        )
+    except Exception as e:
+        # You can log e here if needed
+        raise HTTPException(status_code=502, detail=f"Failed to fetch thumbnail: {e}")

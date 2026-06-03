@@ -41,7 +41,17 @@ def get_instagram_metadata(url: str) -> Dict[str, Any]:
     comment_count = info.get("comment_count")
     description = info.get("description") or ""
     upload_date_raw = info.get("upload_date")  # "YYYYMMDD" if present
+    
+    # Get thumbnail - may be string, list, or dict depending on source
     thumbnail_url = info.get("thumbnail")
+    if isinstance(thumbnail_url, list):
+        # yt-dlp returns thumbnails as a list, get the last one (highest quality)
+        if thumbnail_url:
+            thumbnail_url = thumbnail_url[-1]
+    if isinstance(thumbnail_url, dict):
+        # Extract URL from dict
+        thumbnail_url = thumbnail_url.get("url", None)
+    
     duration_seconds = info.get("duration") or 0
 
     upload_date_iso = None

@@ -1,4 +1,6 @@
 # app/main.py
+import asyncio
+from fastapi.concurrency import run_in_threadpool
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, HttpUrl
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +13,7 @@ from app.services.youtube_service import (
     YouTubeVideoDataError,
 )
 from app.rag.vector_store import upsert_video_chunks, get_retriever, clear_vector_store
+from app.services.transcript_service import get_transcript_fast, TranscriptError
 from dotenv import load_dotenv
 load_dotenv()
 from sentence_transformers import SentenceTransformer
@@ -103,7 +106,7 @@ def compute_engagement_rate(likes: Optional[int], comments: Optional[int], views
     return (likes + comments) / views * 100.0
 
 
-def process_single_video(url: str, label: str) -> VideoInfo:
+async def process_single_video(url: str, label: str) -> VideoInfo:
     platform = detect_platform(url)
     video_data: Dict[str, Any] = {
         "url": url,
@@ -114,25 +117,38 @@ def process_single_video(url: str, label: str) -> VideoInfo:
         video_id = extract_video_id(url)
         if not video_id:
             # If ID extraction fails, still return a stub; don't crash the whole request
-            video_data["video_id"] = None
-            video_data["title"] = None
-            video_data["creator"] = None
-            video_data["views"] = None
-            video_data["likes"] = None
-            video_data["comments"] = None
-            video_data["upload_date"] = None
-            video_data["duration_seconds"] = None
-            video_data["duration"] = None
-            video_data["thumbnail_url"] = None
-            video_data["transcript"] = ""
+            video_data.update(
+                {
+                    "video_id": None,
+                    "title": None,
+                    "creator": None,
+                    "views": None,
+                    "likes": None,
+                    "comments": None,
+                    "upload_date": None,
+                    "duration_seconds": None,
+                    "duration": None,
+                    "thumbnail_url": None,
+                    "transcript": "",
+                }
+            )
             return VideoInfo(**video_data)
 
         video_data["video_id"] = video_id
 
-        try:
-            metadata = get_youtube_metadata(url)
-        except YouTubeVideoDataError as e:
-            # Log internally if you want, but don't kill the request
+        metadata_task = run_in_threadpool(get_youtube_metadata, url)
+        transcript_task = run_in_threadpool(get_transcript_fast, url, label)
+
+        metadata = None
+        transcript = ""
+
+        metadata_result, transcript_result = await asyncio.gather(
+            metadata_task,
+            transcript_task,
+            return_exceptions=True,
+        )
+
+        if isinstance(metadata_result, YouTubeVideoDataError) or isinstance(metadata_result, Exception):
             metadata = {
                 "title": None,
                 "channel": None,
@@ -145,9 +161,14 @@ def process_single_video(url: str, label: str) -> VideoInfo:
                 "thumbnail_url": None,
                 "description": "",
             }
+        else:
+            metadata = metadata_result
 
-        # Placeholder transcript for now; avoids youtube-transcript-api issues
-        transcript = get_youtube_transcript_placeholder(label)
+        if isinstance(transcript_result, TranscriptError) or isinstance(transcript_result, Exception):
+            print(f"[WARN] Transcript fetch failed for {label}: {transcript_result}")
+            transcript = get_youtube_transcript_placeholder(label)
+        else:
+            transcript = transcript_result or get_youtube_transcript_placeholder(label)
 
         video_data.update(
             {
@@ -164,12 +185,11 @@ def process_single_video(url: str, label: str) -> VideoInfo:
             }
         )
 
-        engagement_rate = compute_engagement_rate(
+        video_data["engagement_rate"] = compute_engagement_rate(
             likes=video_data.get("likes"),
             comments=video_data.get("comments"),
             views=video_data.get("views"),
         )
-        video_data["engagement_rate"] = engagement_rate
 
 
     elif platform == "instagram":
@@ -190,53 +210,53 @@ def process_single_video(url: str, label: str) -> VideoInfo:
 
 
 @app.post("/api/process_videos", response_model=VideoPairResponse)
-def process_videos(payload: VideoPairRequest):
-
-    # Clear previous chunks so we only ever reason over the current pair
+async def process_videos(payload: VideoPairRequest):
     try:
         clear_vector_store()
     except Exception as e:
         print(f"[WARN] Failed to clear vector store: {e}")
 
-    video_a_info = process_single_video(str(payload.video_a_url), "Video A")
-    video_b_info = process_single_video(str(payload.video_b_url), "Video B")
+    video_a_info, video_b_info = await asyncio.gather(
+        process_single_video(str(payload.video_a_url), "Video A"),
+        process_single_video(str(payload.video_b_url), "Video B"),
+    )
 
-    # Upsert chunks for RAG
     try:
-        upsert_video_chunks(
-            video_id=video_a_info.video_id or "unknown",
-            video_label="A",
-            transcript=video_a_info.transcript or "",
-            metadata={
-                "video_id": video_a_info.video_id,
-                "platform": video_a_info.platform,
-                "title": video_a_info.title,
-                "creator": video_a_info.creator,
-                "views": video_a_info.views,
-                "likes": video_a_info.likes,
-                "comments": video_a_info.comments,
-                "engagement_rate": video_a_info.engagement_rate,
-            },
-        )
-
-        upsert_video_chunks(
-            video_id=video_b_info.video_id or "unknown",
-            video_label="B",
-            transcript=video_b_info.transcript or "",
-            metadata={
-                "video_id": video_b_info.video_id,
-                "platform": video_b_info.platform,
-                "title": video_b_info.title,
-                "creator": video_b_info.creator,
-                "views": video_b_info.views,
-                "likes": video_b_info.likes,
-                "comments": video_b_info.comments,
-                "engagement_rate": video_b_info.engagement_rate,
-            },
+        await asyncio.gather(
+            run_in_threadpool(
+                upsert_video_chunks,
+                video_a_info.video_id or "unknown",
+                "A",
+                video_a_info.transcript or "",
+                {
+                    "video_id": video_a_info.video_id,
+                    "platform": video_a_info.platform,
+                    "title": video_a_info.title,
+                    "creator": video_a_info.creator,
+                    "views": video_a_info.views,
+                    "likes": video_a_info.likes,
+                    "comments": video_a_info.comments,
+                    "engagement_rate": video_a_info.engagement_rate,
+                },
+            ),
+            run_in_threadpool(
+                upsert_video_chunks,
+                video_b_info.video_id or "unknown",
+                "B",
+                video_b_info.transcript or "",
+                {
+                    "video_id": video_b_info.video_id,
+                    "platform": video_b_info.platform,
+                    "title": video_b_info.title,
+                    "creator": video_b_info.creator,
+                    "views": video_b_info.views,
+                    "likes": video_b_info.likes,
+                    "comments": video_b_info.comments,
+                    "engagement_rate": video_b_info.engagement_rate,
+                },
+            ),
         )
     except Exception as e:
-        # In demo, we don't fail the whole request if embeddings/storage fails.
-        # You can log this in a real app.
         print(f"[WARN] Failed to upsert video chunks: {e}")
 
     return VideoPairResponse(
@@ -255,16 +275,6 @@ def chat_rag(payload: ChatRequest):
     """
     if groq_client is None:
         raise HTTPException(status_code=500, detail="LLM not configured (missing GROQ_API_KEY).")
-    
-    try:
-        completion = groq_client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=messages,
-            temperature=0.4,
-        )
-        answer = completion.choices[0].message.content
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Groq LLM error: {e}")
 
     retriever = get_retriever(k=6)
     # Retrieve relevant chunks
@@ -365,10 +375,6 @@ def chat_rag(payload: ChatRequest):
             "content": f"Context:\n{context_text}\n\nUser question: {payload.message}",
         }
     )
-
-    # Call the LLM
-    if groq_client is None:
-        raise HTTPException(status_code=500, detail="LLM not configured (missing GROQ_API_KEY).")
 
     try:
         completion = groq_client.chat.completions.create(

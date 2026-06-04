@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
 langchain
+langchain-openai
 pydantic
 python-dotenv
 chromadb
@@ -8,3 +9,4 @@ yt-dlp
 langchain-huggingface
 langchain-chroma
 groq
+sentence-transformers

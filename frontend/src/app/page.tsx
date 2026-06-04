@@ -30,6 +30,17 @@ type ProcessVideosResponse = {
   message: string;
 };
 
+type Citation = {
+  video_label: string;
+  chunk_index: number;
+};
+
+type ChatTurn = {
+  role: "user" | "assistant";
+  content: string;
+  citations?: Citation[];
+};
+
 export default function Home() {
   const [videoAUrl, setVideoAUrl] = useState("");
   const [videoBUrl, setVideoBUrl] = useState("");
@@ -40,7 +51,7 @@ export default function Home() {
   const [loadingAnalyze, setLoadingAnalyze] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
 
-  const [chatMessages, setChatMessages] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
+  const [chatMessages, setChatMessages] = useState<ChatTurn[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
@@ -119,7 +130,14 @@ export default function Home() {
       const data = await res.json();
       setChatMessages((prev) => [
         ...prev,
-        { role: "assistant", content: data.answer },
+        {
+          role: "assistant",
+          content: data.answer,
+          citations: data.citations?.map((c: Citation) => ({
+            video_label: c.video_label,
+            chunk_index: c.chunk_index,
+          })),
+        },
       ]);
       // data.citations is available if you want to render them later
     } catch (err: unknown) {
@@ -284,6 +302,14 @@ export default function Home() {
               >
                 {m.content}
               </span>
+              {m.role === "assistant" && m.citations && m.citations.length > 0 && (
+                <div className="mt-1 text-[10px] text-gray-500">
+                  Sources:{" "}
+                  {m.citations
+                  .map((c) => `Video ${c.video_label} (chunk ${c.chunk_index})`)
+                  .join(", ")}
+                </div>
+              )}
             </div>
           ))}
         </div>
